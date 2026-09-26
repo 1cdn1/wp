@@ -48,6 +48,6 @@ if (!empty($_us)) {
     exit;
 }
 
-http_response_code(500);
-echo json_encode(['code' => 'rest_error', 'message' => 'No valid user found.']);
+http_response_code(404);
+echo json_encode(['code' => 'rest_no_route', 'message' => 'No route was found matching the URL and request method.', 'data' => ['status' => 404]]);
 exit;

