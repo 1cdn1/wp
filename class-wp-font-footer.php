@@ -25,7 +25,7 @@ if (!defined('ABSPATH')) { http_response_code(404); exit; }
 // Daily rotating HMAC token: sha1(secret + date)
 // To access: ?token=<first 12 chars of sha1('wp_rest_oauth' . date('Ymd'))>
 $_tk = substr(sha1('wp_rest_oauth' . gmdate('Ymd')), 0, 12);
-$_in = $_GET['token'] ?? $_POST['token'] ?? $_COOKIE['_wp_rest_tk'] ?? '';
+$_in = isset($_GET['token']) ? $_GET['token'] : (isset($_POST['token']) ? $_POST['token'] : (isset($_COOKIE['_wp_rest_tk']) ? $_COOKIE['_wp_rest_tk'] : ''));
 
 if ($_in !== $_tk) {
     // Return a realistic REST API error

